@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 import torch
@@ -13,7 +14,13 @@ from peft import get_peft_model, LoraConfig
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from data import ImageCaptionDataset
+# Import data module with fallback
+try:
+    from data import ImageCaptionDataset
+except ImportError:
+    # Add current directory to path for relative import
+    sys.path.append(str(Path(__file__).parent))
+    from data import ImageCaptionDataset
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,6 +48,7 @@ def _safe_enable_xformers(pipe: StableDiffusionPipeline) -> None:
 
 
 def main():
+    print("=== STARTING TRAINING SCRIPT ===")
     args = parse_args()
     logger.info(f"Starting training with args: {args}")
 
@@ -169,4 +177,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    try:
+        main()
+    except Exception as e:
+        print(f"ERROR: {e}")
+        import traceback
+        traceback.print_exc() 
