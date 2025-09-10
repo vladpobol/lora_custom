@@ -1,40 +1,44 @@
-# LoRA Fine-Tuning Boilerplate
+# Дообучение LoRA (минимальный шаблон)
 
-Minimal pipeline to fine-tune an open-source text-to-image model (Stable Diffusion 1.5) with LoRA adapters and generate images in web services.
+Минимальный пайплайн для дообучения открытой текст‑в‑изображение модели (Stable Diffusion 1.5) с помощью LoRA‑адаптеров и генерации изображений. Подходит для встройки в веб‑сервис.
 
-## Features
-* Pre-processing pipeline for user images
-* LoRA training script (DreamBooth-style) powered by 🤗 Diffusers & PEFT
-* Inference script that merges LoRA or keeps separate adapters
-* Works on consumer GPUs (<=12 GB) with 512² resolution
+## Что входит
+- Предобработка пользовательских изображений
+- Скрипт обучения LoRA (DreamBooth‑подобный) на  Diffusers + PEFT
+- Скрипт инференса с подключением сохранённого LoRA
+- Рассчитано на потребительские GPU (≈8–12 ГБ) при 512×512
 
-## Setup
+## Установка
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Data preparation
-Put training images in a directory, e.g. `data/rock_art/` (8-15 images). Optionally add a text file with captions; otherwise prompt template will use a single token placeholder.
+## Подготовка данных
+Положите 8–15 изображений одного стиля в каталог, например `data/my_style/`.
+Подписи к изображениям берутся в порядке приоритета:
+1) `image.jpg` + файл `image.txt` с подписью
+2) `captions.txt` в формате `filename<TAB>caption`
+3) шаблон: `a photo of <{placeholder_token}>`
 
-## Training
+## Обучение
 ```bash
 python src/train_lora.py \
-    --train_data_dir data/rock_art \
-    --output_dir outputs/rock_art \
-    --placeholder_token "rockart" \
-    --resolution 512 \
-    --batch_size 2 \
-    --epochs 10
+  --train_data_dir data/my_style \
+  --output_dir outputs/my_style \
+  --placeholder_token mystyle \
+  --resolution 512 \
+  --batch_size 2 \
+  --epochs 10
 ```
+Модель и LoRA‑веса сохранятся в `outputs/my_style/`.
 
-## Inference
+## Инференс
 ```bash
 python src/infer.py \
-    --lora_path outputs/rock_art \
-    --prompt "a painting in <rockart> style of a castle at sunset" \
-    --num_images 4
+  --lora_path outputs/my_style \
+  --prompt "a portrait in <mystyle> style, dramatic lighting" \
+  --num_images 4
 ```
-
-See `examples/demo.ipynb` for an end-to-end walkthrough. 
+Изображения сохраняются в `outputs/gen/` (или в путь из `--output_dir`). 
