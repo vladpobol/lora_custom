@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from accelerate import Accelerator
+from accelerate.utils import ProjectConfiguration
 from diffusers import StableDiffusionPipeline
 from peft import get_peft_model, LoraConfig
 from torch.utils.data import DataLoader
@@ -44,7 +45,8 @@ def main():
 
     logs_dir = Path(args.output_dir) / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    accelerator = Accelerator(log_with="tensorboard", logging_dir=str(logs_dir))
+    project_config = ProjectConfiguration(project_dir=str(logs_dir))
+    accelerator = Accelerator(log_with="tensorboard", project_config=project_config)
     device = accelerator.device
 
     dataset = ImageCaptionDataset(
