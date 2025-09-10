@@ -50,39 +50,62 @@ def _safe_enable_xformers(pipe: StableDiffusionPipeline) -> None:
 def main():
     print("=== STARTING TRAINING SCRIPT ===")
     args = parse_args()
+    print(f"Args parsed successfully: {args}")
     logger.info(f"Starting training with args: {args}")
 
+    print("Creating output directories...")
     logs_dir = Path(args.output_dir) / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
+    print("Directories created")
+
+    print("Initializing Accelerator...")
     project_config = ProjectConfiguration(project_dir=str(logs_dir))
     accelerator = Accelerator(log_with="tensorboard", project_config=project_config)
     device = accelerator.device
+    print(f"Accelerator initialized on device: {device}")
 
+    print("Loading dataset...")
     logger.info("Loading dataset...")
-    dataset = ImageCaptionDataset(
-        args.train_data_dir,
-        placeholder_token=args.placeholder_token,
-        resolution=args.resolution,
-    )
-    logger.info(f"Dataset loaded: {len(dataset)} images")
+    try:
+        dataset = ImageCaptionDataset(
+            args.train_data_dir,
+            placeholder_token=args.placeholder_token,
+            resolution=args.resolution,
+        )
+        print(f"Dataset loaded successfully: {len(dataset)} images")
+        logger.info(f"Dataset loaded: {len(dataset)} images")
+    except Exception as e:
+        print(f"ERROR loading dataset: {e}")
+        raise
+    
+    print("Creating dataloader...")
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=2)
+    print("Dataloader created")
 
     # Load model & tokenizer
+    print("Loading Stable Diffusion model...")
     logger.info("Loading Stable Diffusion model...")
     model_id = "runwayml/stable-diffusion-v1-5"
     dtype = torch.float16 if torch.cuda.is_available() else torch.float32
     pipe = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=dtype).to(device)
+    print("Model loaded to device")
+    
     _safe_enable_xformers(pipe)
+    print("xFormers setup complete")
+    
     tokenizer: AutoTokenizer = pipe.tokenizer
 
     # add placeholder token
+    print(f"Adding placeholder token: {args.placeholder_token}")
     logger.info(f"Adding placeholder token: {args.placeholder_token}")
     with torch.no_grad():
         num_added = tokenizer.add_tokens(args.placeholder_token)
     if num_added:
         pipe.text_encoder.resize_token_embeddings(len(tokenizer))
+    print(f"Token added: {num_added} new tokens")
 
     # prepare LoRA on UNet with proper target modules for diffusers UNet
+    print("Setting up LoRA...")
     logger.info("Setting up LoRA...")
     lora_config = LoraConfig(
         r=4,
@@ -100,12 +123,16 @@ def main():
     )
     
     try:
+        print("Applying LoRA to UNet...")
         unet = get_peft_model(pipe.unet, lora_config)
         unet.train()
+        print("LoRA applied successfully")
         logger.info("LoRA model created successfully")
     except Exception as e:
+        print(f"Error creating LoRA model: {e}")
         logger.error(f"Error creating LoRA model: {e}")
         # Fallback to simpler target modules
+        print("Trying with simpler LoRA config...")
         logger.info("Trying with simpler LoRA config...")
         lora_config = LoraConfig(
             r=4,
@@ -116,15 +143,22 @@ def main():
         )
         unet = get_peft_model(pipe.unet, lora_config)
         unet.train()
+        print("Fallback LoRA applied successfully")
 
+    print("Creating optimizer...")
     optimizer = torch.optim.Adam(unet.parameters(), lr=args.learning_rate)
+    print("Optimizer created")
 
     # Prepare for (optional) DDP / mixed precision; works fine on single GPU too
+    print("Preparing with Accelerator...")
     unet, optimizer, dataloader = accelerator.prepare(unet, optimizer, dataloader)
+    print("Accelerator preparation complete")
 
+    print(f"Starting training for {args.epochs} epochs...")
     logger.info(f"Starting training for {args.epochs} epochs...")
     global_step = 0
     for epoch in range(args.epochs):
+        print(f"Starting epoch {epoch + 1}/{args.epochs}")
         logger.info(f"Starting epoch {epoch + 1}/{args.epochs}")
         for batch_idx, batch in enumerate(dataloader):
             with accelerator.accumulate(unet):
