@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import torch
 from diffusers import StableDiffusionPipeline
@@ -20,10 +20,21 @@ def parse_args():
     return p.parse_args()
 
 
-def load_pipeline(lora_path: str | None = None):
+def _safe_enable_xformers(pipe: StableDiffusionPipeline) -> None:
+    try:
+        pipe.enable_xformers_memory_efficient_attention()
+    except Exception:
+        pass
+
+
+def load_pipeline(lora_path: Optional[str] = None, device: Optional[str] = None):
     base_model = "runwayml/stable-diffusion-v1-5"
-    pipe = StableDiffusionPipeline.from_pretrained(base_model, torch_dtype=torch.float16).to("cuda")
-    pipe.enable_xformers_memory_efficient_attention()
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    dtype = torch.float16 if device == "cuda" else torch.float32
+
+    pipe = StableDiffusionPipeline.from_pretrained(base_model, torch_dtype=dtype)
+    pipe = pipe.to(device)
+    _safe_enable_xformers(pipe)
 
     if lora_path:
         config = PeftConfig.from_pretrained(lora_path)
@@ -37,7 +48,6 @@ def main():
     torch.manual_seed(args.seed)
 
     pipe = load_pipeline(args.lora_path)
-    pipe.to("cuda")
 
     images: List[Image.Image] = []
     for _ in range(args.num_images):
@@ -48,6 +58,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     for i, img in enumerate(images):
         img.save(out_dir / f"img_{i}.png")
+
 
 if __name__ == "__main__":
     main() 

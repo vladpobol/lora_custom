@@ -3,14 +3,12 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torch.nn.functional as F
 from accelerate import Accelerator
 from diffusers import StableDiffusionPipeline
-from diffusers.loaders import AttnProcsLayers
-from peft import get_peft_model, LoraConfig, TaskType
+from peft import get_peft_model, LoraConfig
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
@@ -18,6 +16,7 @@ from data import ImageCaptionDataset
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="LoRA fine-tune Stable Diffusion 1.5")
@@ -31,9 +30,21 @@ def parse_args():
     parser.add_argument("--checkpointing_steps", type=int, default=100)
     return parser.parse_args()
 
+
+def _safe_enable_xformers(pipe: StableDiffusionPipeline) -> None:
+    try:
+        pipe.enable_xformers_memory_efficient_attention()
+    except Exception as _:
+        # Not available in environment; proceed without xFormers
+        pass
+
+
 def main():
     args = parse_args()
-    accelerator = Accelerator(log_with="tensorboard", project_config=None)
+
+    logs_dir = Path(args.output_dir) / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    accelerator = Accelerator(log_with="tensorboard", logging_dir=str(logs_dir))
     device = accelerator.device
 
     dataset = ImageCaptionDataset(
@@ -45,8 +56,9 @@ def main():
 
     # Load model & tokenizer
     model_id = "runwayml/stable-diffusion-v1-5"
-    pipe = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=torch.float16).to(device)
-    pipe.enable_xformers_memory_efficient_attention()
+    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+    pipe = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=dtype).to(device)
+    _safe_enable_xformers(pipe)
     tokenizer: AutoTokenizer = pipe.tokenizer
 
     # add placeholder token
@@ -55,32 +67,44 @@ def main():
     if num_added:
         pipe.text_encoder.resize_token_embeddings(len(tokenizer))
 
-    # prepare LoRA
+    # prepare LoRA on UNet attention modules via PEFT
     lora_config = LoraConfig(
-        task_type=TaskType.UNET_TUNING,
         r=4,
         lora_alpha=4,
         lora_dropout=0.1,
+        bias="none",
+        target_modules=["to_q", "to_k", "to_v", "to_out.0"],
     )
     unet = get_peft_model(pipe.unet, lora_config)
     unet.train()
 
     optimizer = torch.optim.Adam(unet.parameters(), lr=args.learning_rate)
 
+    # Prepare for (optional) DDP / mixed precision; works fine on single GPU too
+    unet, optimizer, dataloader = accelerator.prepare(unet, optimizer, dataloader)
+
     global_step = 0
     for epoch in range(args.epochs):
         for batch in dataloader:
             with accelerator.accumulate(unet):
-                latents = pipe.vae.encode(batch["pixel_values"].to(device, dtype=torch.float16)).latent_dist.sample()
-                latents = latents * 0.18215
+                pixel_values = batch["pixel_values"].to(device=device, dtype=dtype)
+                latents = pipe.vae.encode(pixel_values).latent_dist.sample() * 0.18215
 
                 noise = torch.randn_like(latents)
-                timesteps = torch.randint(0, pipe.scheduler.num_train_timesteps, (latents.shape[0],), device=device).long()
+                timesteps = torch.randint(
+                    0, pipe.scheduler.num_train_timesteps, (latents.shape[0],), device=device
+                ).long()
                 noisy_latents = pipe.scheduler.add_noise(latents, noise, timesteps)
 
-                encoder_hidden_states = pipe.text_encoder(tokenizer(batch["caption"], padding="max_length", truncation=True, max_length=tokenizer.model_max_length, return_tensors="pt").input_ids.to(device))[
-                    0
-                ]
+                tokenized = tokenizer(
+                    batch["caption"],
+                    padding="max_length",
+                    truncation=True,
+                    max_length=tokenizer.model_max_length,
+                    return_tensors="pt",
+                )
+                input_ids = tokenized.input_ids.to(device)
+                encoder_hidden_states = pipe.text_encoder(input_ids)[0]
 
                 model_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
                 loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
@@ -100,7 +124,9 @@ def main():
     if accelerator.is_main_process:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
         unet.save_pretrained(args.output_dir)
+        # Save base pipe snapshot to align versions used at inference
         pipe.save_pretrained(args.output_dir, safe_serialization=True)
+
 
 if __name__ == "__main__":
     main() 
